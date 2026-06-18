@@ -7,6 +7,7 @@ import streamlit as st
 from app.services.job_parser import parse_job_description
 from app.services.latex_generator import generate_resume_files
 from app.services.matcher import score_resume_against_job
+from app.services.pdf_extractor import extract_text_from_pdf_bytes
 from app.services.resume_parser import parse_resume
 
 
@@ -19,10 +20,23 @@ def main() -> None:
 
     left, right = st.columns(2)
     with left:
+        uploaded_resume = st.file_uploader("Resume PDF", type=["pdf"])
+        resume_text = ""
+        if uploaded_resume:
+            try:
+                resume_text = extract_text_from_pdf_bytes(uploaded_resume.getvalue())
+                if resume_text:
+                    st.success("Resume PDF text extracted. Review it below before analyzing.")
+                else:
+                    st.warning("No selectable text found in this PDF. Try a text-based PDF or paste the resume text below.")
+            except Exception as error:
+                st.error(f"Could not read that PDF: {error}")
+
         resume_text = st.text_area(
-            "Resume text",
+            "Resume text extracted from PDF",
+            value=resume_text,
             height=360,
-            placeholder="Paste the resume exactly as written. ApplyPilotAI will not invent facts.",
+            placeholder="Upload a text-based resume PDF, or paste the resume exactly as written.",
         )
     with right:
         job_text = st.text_area(
@@ -35,7 +49,7 @@ def main() -> None:
 
     if analyze_clicked:
         if not resume_text.strip() or not job_text.strip():
-            st.warning("Paste both resume text and job description text to run the analysis.")
+            st.warning("Upload a resume PDF or paste resume text, then paste a job description to run the analysis.")
             return
 
         resume = parse_resume(resume_text)

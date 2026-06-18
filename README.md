@@ -6,7 +6,8 @@ The app does not auto-submit applications and does not invent resume facts.
 
 ## Features
 
-- Resume text input
+- Resume PDF upload with text extraction
+- Resume text fallback input
 - Job description text input
 - ATS keyword extraction
 - Resume-job match score
@@ -66,5 +67,6 @@ If `pdflatex` is not installed, the app creates a simple fallback PDF with Repor
 ## Notes
 
 - Paste only resume facts that are true.
+- Text-based PDFs work best. Scanned image PDFs require OCR and are outside this MVP.
 - Treat missing keywords as review prompts, not instructions to fabricate experience.
 - Review generated files before sharing them with employers.
