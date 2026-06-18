@@ -1,0 +1,37 @@
+\documentclass[10pt,letterpaper]{article}
+\usepackage[margin=0.7in]{geometry}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\pagenumbering{gobble}
+\setlength{\parindent}{0pt}
+\setlist[itemize]{leftmargin=*, topsep=2pt, itemsep=2pt}
+\titleformat{\section}{\large\bfseries}{}{0em}{}[\titlerule]
+
+\begin{document}
+
+{% if resume.name %}{\LARGE \textbf{ {{ resume.name|latex_escape }} }}\\{% endif %}
+{% set contact = [] %}
+{% if resume.email %}{% set _ = contact.append(resume.email|latex_escape) %}{% endif %}
+{% if resume.phone %}{% set _ = contact.append(resume.phone|latex_escape) %}{% endif %}
+{% if contact %}{{ contact|join(" \\; | \\; ") }}{% endif %}
+
+{% for heading, content in resume.sections.items() %}
+{% if content %}
+\section*{ {{ heading.title()|latex_escape }} }
+{% for line in content.splitlines() %}
+{{ line|latex_escape }}\\
+{% endfor %}
+{% endif %}
+{% endfor %}
+
+{% if suggestions %}
+\section*{ATS Improvement Notes}
+\begin{itemize}
+{% for suggestion in suggestions %}
+  \item {{ suggestion|latex_escape }}
+{% endfor %}
+\end{itemize}
+{% endif %}
+
+\end{document}

@@ -179,3 +179,12 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# ApplyPilotAI local outputs
+output/generated_resumes/*
+!output/generated_resumes/.gitkeep
+*.aux
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
