@@ -11,13 +11,20 @@ from dataclasses import dataclass
 
 
 SECTION_ALIASES = {
-    "summary": ("summary", "profile", "professional summary", "objective"),
     "skills": ("skills", "technical skills", "core skills", "competencies"),
     "experience": ("experience", "work experience", "professional experience", "employment"),
-    "education": ("education", "academic background"),
     "projects": ("projects", "selected projects"),
+    "education": ("education", "academic background"),
     "certifications": ("certifications", "certificates", "licenses"),
 }
+
+STRUCTURED_SECTION_KEYS = (
+    "skills",
+    "experience",
+    "projects",
+    "education",
+    "certifications",
+)
 
 
 @dataclass(frozen=True)
@@ -27,6 +34,7 @@ class ParsedResume:
     email: str
     phone: str
     sections: dict[str, str]
+    structured: dict[str, list[str]]
 
 
 def normalize_whitespace(text: str) -> str:
@@ -47,7 +55,8 @@ def parse_resume(text: str) -> ParsedResume:
         cleaned,
     )
     name = _guess_name(lines, email, phone)
-    sections = _extract_sections(lines)
+    structured = _extract_structured_sections(lines)
+    sections = {key: "\n".join(value).strip() for key, value in structured.items()}
 
     return ParsedResume(
         raw_text=cleaned,
@@ -55,6 +64,7 @@ def parse_resume(text: str) -> ParsedResume:
         email=email,
         phone=phone,
         sections=sections,
+        structured=structured,
     )
 
 
@@ -82,8 +92,8 @@ def _canonical_heading(line: str) -> str | None:
     return None
 
 
-def _extract_sections(lines: list[str]) -> dict[str, str]:
-    sections: dict[str, list[str]] = {key: [] for key in SECTION_ALIASES}
+def _extract_structured_sections(lines: list[str]) -> dict[str, list[str]]:
+    sections: dict[str, list[str]] = {key: [] for key in STRUCTURED_SECTION_KEYS}
     current: str | None = None
 
     for line in lines:
@@ -92,6 +102,21 @@ def _extract_sections(lines: list[str]) -> dict[str, str]:
             current = heading
             continue
         if current:
-            sections[current].append(line)
+            sections[current].extend(_split_section_line(line))
 
-    return {key: "\n".join(value).strip() for key, value in sections.items()}
+    return {key: _clean_items(value) for key, value in sections.items()}
+
+
+def _split_section_line(line: str) -> list[str]:
+    if "," in line and len(line) < 160:
+        return [part.strip() for part in line.split(",")]
+    return [line.strip()]
+
+
+def _clean_items(items: list[str]) -> list[str]:
+    cleaned = []
+    for item in items:
+        normalized = re.sub(r"^[\-*•\d.)\s]+", "", item).strip()
+        if normalized:
+            cleaned.append(normalized)
+    return cleaned

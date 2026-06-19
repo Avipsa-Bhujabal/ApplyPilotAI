@@ -188,3 +188,7 @@ output/generated_resumes/*
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+
+# Keep the job extraction SQLite database local
+database/jobs.db
+database/*.db-journal

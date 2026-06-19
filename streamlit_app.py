@@ -1,129 +1,197 @@
 from __future__ import annotations
 
-from pathlib import Path
+from urllib.parse import urlparse
 
+import pandas as pd
 import streamlit as st
 
-from app.services.job_parser import parse_job_description
-from app.services.latex_generator import generate_resume_files
-from app.services.matcher import score_resume_against_job
-from app.services.pdf_extractor import extract_text_from_pdf_bytes
-from app.services.resume_parser import parse_resume
+from app.services.jd_cleaner import (
+    extract_qualifications,
+    extract_responsibilities,
+    extract_technical_skills,
+)
+from app.services.job_extractors import (
+    extract_direct_url_jobs,
+    extract_greenhouse_jobs,
+    extract_lever_jobs,
+)
+from app.services.job_source_config import load_job_sources
+from app.services.job_storage import list_jobs, save_jobs
 
 
-st.set_page_config(page_title="ApplyPilotAI", page_icon="AP", layout="wide")
+st.set_page_config(page_title="ApplyPilotAI Job Extractor", page_icon="AP", layout="wide")
 
 
 def main() -> None:
-    st.title("ApplyPilotAI")
-    st.caption("ATS resume matching and LaTeX resume generation. No application auto-submission.")
+    refresh_clicked = st.sidebar.button("Refresh configured sources", use_container_width=True)
+    auto_fetch_configured_sources(force=refresh_clicked)
+    render_jobs()
 
-    left, right = st.columns(2)
-    with left:
-        uploaded_resume = st.file_uploader("Resume PDF", type=["pdf"])
-        resume_text = ""
-        if uploaded_resume:
+
+def auto_fetch_configured_sources(force: bool = False) -> None:
+    try:
+        sources = load_job_sources()
+    except Exception as error:
+        st.error(f"Could not read data/job_sources.json: {error}")
+        return
+
+    if not sources:
+        return
+
+    sources_key = "|".join(f"{source['company']}:{source['url']}:{source['source_type']}" for source in sources)
+    if not force and st.session_state.get("last_sources_key") == sources_key:
+        return
+
+    total_saved = 0
+    failures = []
+    with st.spinner("Fetching configured job sources..."):
+        for source in sources:
             try:
-                resume_text = extract_text_from_pdf_bytes(uploaded_resume.getvalue())
-                if resume_text:
-                    st.success("Resume PDF text extracted. Review it below before analyzing.")
-                else:
-                    st.warning("No selectable text found in this PDF. Try a text-based PDF or paste the resume text below.")
+                source_url = source["url"]
+                if not _looks_like_url(source_url):
+                    raise ValueError("Invalid URL.")
+                source_type = _resolve_source_type(source_url, source["source_type"])
+                saved_count = run_extraction(source["company"], source_url, source_type, show_status=False)
+                total_saved += saved_count or 0
             except Exception as error:
-                st.error(f"Could not read that PDF: {error}")
+                failures.append(f"{source.get('company', 'Unknown')}: {error}")
 
-        resume_text = st.text_area(
-            "Resume text extracted from PDF",
-            value=resume_text,
-            height=360,
-            placeholder="Upload a text-based resume PDF, or paste the resume exactly as written.",
-        )
-    with right:
-        job_text = st.text_area(
-            "Job description text",
-            height=360,
-            placeholder="Paste the full job description, including requirements and responsibilities.",
-        )
-
-    analyze_clicked = st.button("Analyze match", type="primary", use_container_width=True)
-
-    if analyze_clicked:
-        if not resume_text.strip() or not job_text.strip():
-            st.warning("Upload a resume PDF or paste resume text, then paste a job description to run the analysis.")
-            return
-
-        resume = parse_resume(resume_text)
-        job = parse_job_description(job_text)
-        result = score_resume_against_job(resume, job)
-
-        st.session_state["resume"] = resume
-        st.session_state["job"] = job
-        st.session_state["match_result"] = result
-
-    if "match_result" in st.session_state:
-        render_results()
+    if failures:
+        st.sidebar.error("Some sources failed.")
+        for failure in failures:
+            st.sidebar.caption(failure)
+    st.session_state["last_sources_key"] = sources_key
+    st.sidebar.caption(f"Fetched {total_saved} job(s).")
 
 
-def render_results() -> None:
-    resume = st.session_state["resume"]
-    job = st.session_state["job"]
-    result = st.session_state["match_result"]
+def run_extraction(
+    company_name: str,
+    source_url: str,
+    source_type: str,
+    show_status: bool = True,
+) -> int | None:
+    try:
+        extractor = {
+            "Greenhouse": extract_greenhouse_jobs,
+            "Lever": extract_lever_jobs,
+            "Direct URL": extract_direct_url_jobs,
+        }[source_type]
+        jobs = extractor(company_name, source_url)
+        saved_count = save_jobs(jobs)
+        if show_status:
+            st.success(f"Extracted and stored {saved_count} job(s) from {source_type}.")
+        return saved_count
+    except Exception as error:
+        if show_status:
+            st.error(f"Could not extract jobs: {error}")
+        else:
+            raise
+        return None
 
-    st.divider()
-    score_col, matched_col, missing_col = st.columns(3)
-    score_col.metric("Resume-job match score", f"{result.score}%")
-    matched_col.metric("Matched keywords", len(result.matched_keywords))
-    missing_col.metric("Missing keywords", len(result.missing_keywords))
 
-    st.subheader("ATS keyword extraction")
-    if job.keywords:
-        st.write(", ".join(job.keywords))
-    else:
-        st.info("No keywords found. Try pasting a fuller job description.")
+def render_jobs() -> None:
+    jobs = list_jobs()
+    if not jobs:
+        st.info("No jobs found yet. Add sources to data/job_sources.json and refresh the page.")
+        return
 
-    keyword_left, keyword_right = st.columns(2)
-    with keyword_left:
-        st.subheader("Matched keywords")
-        st.write(", ".join(result.matched_keywords) if result.matched_keywords else "None yet.")
-    with keyword_right:
-        st.subheader("Missing keywords")
-        st.write(", ".join(result.missing_keywords) if result.missing_keywords else "No missing keywords detected.")
+    table_rows = [
+        {
+            "id": job["id"],
+            "title": job["title"],
+            "company": job["company"],
+            "location": job["location"],
+            "department": job["department"],
+            "employment_type": job["employment_type"],
+            "source_type": job["source_type"],
+            "scraped_at": job["scraped_at"],
+            "apply_url": job["apply_url"],
+        }
+        for job in jobs
+    ]
+    df = pd.DataFrame(table_rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
-    st.subheader("ATS improvement suggestions")
-    for suggestion in result.suggestions:
-        st.write(f"- {suggestion}")
-
-    st.subheader("LaTeX resume generation")
-    st.write(
-        "The generated resume uses only the resume text you provided plus ATS improvement notes. "
-        "Review every change before sending it anywhere."
+    st.download_button(
+        "Export CSV",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name="extracted_jobs.csv",
+        mime="text/csv",
+        use_container_width=True,
     )
 
-    if st.button("Generate LaTeX and PDF", use_container_width=True):
-        generated = generate_resume_files(resume, result.suggestions)
-        st.success(generated.message)
-        st.write(f"LaTeX file: `{generated.tex_path}`")
-        st.write(f"PDF file: `{generated.pdf_path}`")
-        render_downloads(generated.tex_path, generated.pdf_path)
+    selected_id = st.selectbox(
+        "Select a job to inspect",
+        options=[job["id"] for job in jobs],
+        format_func=lambda job_id: _job_label(jobs, job_id),
+    )
+    selected_job = next(job for job in jobs if job["id"] == selected_id)
+    render_job_detail(selected_job)
 
 
-def render_downloads(tex_path: Path, pdf_path: Path) -> None:
-    if tex_path.exists():
-        st.download_button(
-            "Download .tex",
-            data=tex_path.read_bytes(),
-            file_name=tex_path.name,
-            mime="application/x-tex",
-            use_container_width=True,
-        )
-    if pdf_path.exists():
-        st.download_button(
-            "Download PDF",
-            data=pdf_path.read_bytes(),
-            file_name=pdf_path.name,
-            mime="application/pdf",
-            use_container_width=True,
-        )
+def render_job_detail(job: dict) -> None:
+    st.subheader(job["title"] or "Selected job")
+    meta_cols = st.columns(4)
+    meta_cols[0].metric("Company", job["company"] or "Unknown")
+    meta_cols[1].metric("Location", job["location"] or "Unknown")
+    meta_cols[2].metric("Department", job["department"] or "Unknown")
+    meta_cols[3].metric("Type", job["employment_type"] or "Unknown")
+
+    st.link_button("Open apply URL", job["apply_url"], use_container_width=True)
+
+    cleaned = job["cleaned_description"] or ""
+    detail_tabs = st.tabs(
+        [
+            "Cleaned Description",
+            "Raw Description",
+            "Responsibilities",
+            "Qualifications",
+            "Technical Skills",
+        ]
+    )
+    with detail_tabs[0]:
+        st.text_area("Cleaned job description", cleaned, height=320)
+    with detail_tabs[1]:
+        st.text_area("Raw job description", job["raw_description"] or "", height=320)
+    with detail_tabs[2]:
+        _render_list(extract_responsibilities(cleaned))
+    with detail_tabs[3]:
+        _render_list(extract_qualifications(cleaned))
+    with detail_tabs[4]:
+        skills = extract_technical_skills(cleaned)
+        st.write(", ".join(skills) if skills else "No technical skills detected.")
+
+
+def _render_list(items: list[str]) -> None:
+    if not items:
+        st.write("No items detected.")
+        return
+    for item in items:
+        st.write(f"- {item}")
+
+
+def _job_label(jobs: list[dict], job_id: int) -> str:
+    job = next((item for item in jobs if item["id"] == job_id), None)
+    if not job:
+        return str(job_id)
+    return f"{job['title']} - {job['company']}"
+
+
+def _looks_like_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _resolve_source_type(source_url: str, source_type: str) -> str:
+    if source_type != "Auto-detect":
+        return source_type
+
+    host = urlparse(source_url).netloc.lower()
+    if "greenhouse.io" in host:
+        return "Greenhouse"
+    if "lever.co" in host:
+        return "Lever"
+    return "Direct URL"
 
 
 if __name__ == "__main__":

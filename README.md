@@ -1,52 +1,45 @@
 # ApplyPilotAI
 
-ApplyPilotAI is a Windows-friendly MVP for comparing a pasted resume against a pasted job description, extracting ATS keywords, showing a match score, identifying missing keywords, suggesting factual improvements, and generating a Jinja2-rendered LaTeX resume with PDF output.
+ApplyPilotAI is currently focused on a Job Extraction MVP.
 
-The app does not auto-submit applications and does not invent resume facts.
+The app automatically extracts clean job data from configured public career pages, stores jobs in SQLite, and lets you inspect raw descriptions, cleaned descriptions, responsibilities, qualifications, and technical skills.
+
+## Supported Sources
+
+- Greenhouse job boards
+- Lever job boards
+- Public direct job URLs
+
+The app intentionally does not scrape LinkedIn, Indeed, Glassdoor, login-gated pages, or captcha-protected pages.
 
 ## Features
 
-- Resume PDF upload with text extraction
-- Resume text fallback input
-- Job description text input
-- ATS keyword extraction
-- Resume-job match score
-- Missing keyword detection
-- ATS improvement suggestions
-- LaTeX resume generation with Jinja2 templates
-- PDF output in `output/generated_resumes/`
-- Streamlit dashboard
-
-## Project Structure
-
-```text
-app/
-  services/
-    job_parser.py
-    resume_parser.py
-    matcher.py
-    latex_generator.py
-templates/
-data/
-output/generated_resumes/
-streamlit_app.py
-README.md
-requirements.txt
-```
+- Automatic fetching from `data/job_sources.json`
+- Job listing extraction:
+  - title
+  - company
+  - location
+  - department/team
+  - employment type
+  - apply URL
+  - raw job description
+  - cleaned job description
+  - scraped timestamp
+- SQLite storage at `database/jobs.db`
+- Extracted jobs table
+- Job detail inspector
+- Responsibilities, qualifications, and technical skills extraction
+- CSV export
 
 ## Setup
 
-From the project folder:
-
 ```powershell
-cd D:\Projects\ApplyPilotAI
+cd D:\ApplyPilotAI
 python -m venv .venv
 .\.venv\Scripts\activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
-
-If your repository is located at `D:\ApplyPilotAI` in this environment, use that path instead.
 
 ## Run
 
@@ -54,19 +47,37 @@ If your repository is located at `D:\ApplyPilotAI` in this environment, use that
 streamlit run streamlit_app.py
 ```
 
-Open the local Streamlit URL shown in the terminal.
+Then open the local URL shown by Streamlit, usually:
 
-## PDF Generation
+```text
+http://localhost:8501
+```
 
-ApplyPilotAI always writes a `.tex` file to `output/generated_resumes/`.
+## Configure Sources
 
-For native LaTeX PDF compilation, install MiKTeX or TeX Live and make sure `pdflatex` is available on your `PATH`.
+Add job boards or job URLs to `data/job_sources.json`:
 
-If `pdflatex` is not installed, the app creates a simple fallback PDF with ReportLab so the MVP remains runnable on Windows.
+```json
+[
+  {
+    "company": "Example Company",
+    "url": "https://boards.greenhouse.io/example",
+    "source_type": "Greenhouse"
+  },
+  {
+    "company": "Another Company",
+    "url": "https://jobs.lever.co/another",
+    "source_type": "Lever"
+  }
+]
+```
+
+Use `"Auto-detect"` for `source_type` if you want the app to infer Greenhouse, Lever, or Direct URL from the URL.
+
+When the Streamlit app opens, it fetches configured sources automatically and shows the jobs table.
 
 ## Notes
 
-- Paste only resume facts that are true.
-- Text-based PDFs work best. Scanned image PDFs require OCR and are outside this MVP.
-- Treat missing keywords as review prompts, not instructions to fabricate experience.
-- Review generated files before sharing them with employers.
+- Start with Greenhouse and Lever URLs for the cleanest extraction.
+- Direct URL extraction works best on public job-detail pages with readable HTML.
+- The SQLite database is local and ignored by Git.
