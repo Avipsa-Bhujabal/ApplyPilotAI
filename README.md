@@ -30,6 +30,11 @@ The app intentionally does not scrape LinkedIn, Indeed, Glassdoor, login-gated p
 - Job detail inspector
 - Responsibilities, qualifications, and technical skills extraction
 - CSV export
+- Resume matching:
+  - upload a resume PDF or paste resume text in the sidebar
+  - "Resume Match" tab scores the resume against the selected job (keyword, semantic, and experience scores)
+  - matched/missing keywords and improvement suggestions
+  - generate a LaTeX resume and PDF (compiled with `pdflatex` if installed, otherwise a ReportLab fallback)
 
 ## Setup
 
