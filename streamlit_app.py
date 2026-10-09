@@ -1,28 +1,23 @@
 from __future__ import annotations
 
 import hashlib
-from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
 
+from app.agent.agent import AgentEvent, agent_available, create_client, run_agent_turn
+from app.agent.tools import AgentContext, score_job
 from app.services.jd_cleaner import (
     extract_qualifications,
     extract_responsibilities,
     extract_technical_skills,
 )
-from app.services.job_extractors import (
-    extract_direct_url_jobs,
-    extract_greenhouse_jobs,
-    extract_lever_jobs,
-)
-from app.services.job_parser import parse_job_description
+from app.services.job_fetcher import fetch_and_store_jobs
 from app.services.job_source_config import load_job_sources
-from app.services.job_storage import list_jobs, save_jobs
-from app.services.latex_generator import generate_resume_files
-from app.services.matcher import MatchResult, score_resume_against_job
+from app.services.job_storage import list_jobs
+from app.services.latex_generator import GeneratedResume, generate_resume_files
 from app.services.pdf_extractor import extract_text_from_pdf_bytes
-from app.services.resume_parser import ParsedResume, parse_resume
+from app.services.resume_parser import parse_resume
 
 
 st.set_page_config(page_title="ApplyPilotAI Job Extractor", page_icon="AP", layout="wide")
@@ -32,7 +27,18 @@ def main() -> None:
     refresh_clicked = st.sidebar.button("Refresh configured sources", use_container_width=True)
     auto_fetch_configured_sources(force=refresh_clicked)
     render_resume_input()
-    render_jobs()
+    jobs_tab, agent_tab = st.tabs(["Jobs", "AI Agent"])
+    with jobs_tab:
+        render_jobs()
+    with agent_tab:
+        render_agent()
+
+
+def _context() -> AgentContext:
+    """Session state shared by the Jobs tab and the agent: resume, scores, generated files."""
+    if "agent_context" not in st.session_state:
+        st.session_state["agent_context"] = AgentContext()
+    return st.session_state["agent_context"]
 
 
 def auto_fetch_configured_sources(force: bool = False) -> None:
@@ -54,12 +60,7 @@ def auto_fetch_configured_sources(force: bool = False) -> None:
     with st.spinner("Fetching configured job sources..."):
         for source in sources:
             try:
-                source_url = source["url"]
-                if not _looks_like_url(source_url):
-                    raise ValueError("Invalid URL.")
-                source_type = _resolve_source_type(source_url, source["source_type"])
-                saved_count = run_extraction(source["company"], source_url, source_type, show_status=False)
-                total_saved += saved_count or 0
+                total_saved += fetch_and_store_jobs(source["company"], source["url"], source["source_type"])
             except Exception as error:
                 failures.append(f"{source.get('company', 'Unknown')}: {error}")
 
@@ -69,31 +70,6 @@ def auto_fetch_configured_sources(force: bool = False) -> None:
             st.sidebar.caption(failure)
     st.session_state["last_sources_key"] = sources_key
     st.sidebar.caption(f"Fetched {total_saved} job(s).")
-
-
-def run_extraction(
-    company_name: str,
-    source_url: str,
-    source_type: str,
-    show_status: bool = True,
-) -> int | None:
-    try:
-        extractor = {
-            "Greenhouse": extract_greenhouse_jobs,
-            "Lever": extract_lever_jobs,
-            "Direct URL": extract_direct_url_jobs,
-        }[source_type]
-        jobs = extractor(company_name, source_url)
-        saved_count = save_jobs(jobs)
-        if show_status:
-            st.success(f"Extracted and stored {saved_count} job(s) from {source_type}.")
-        return saved_count
-    except Exception as error:
-        if show_status:
-            st.error(f"Could not extract jobs: {error}")
-        else:
-            raise
-        return None
 
 
 def render_resume_input() -> None:
@@ -113,19 +89,21 @@ def render_resume_input() -> None:
     if not resume_text:
         resume_text = pasted.strip()
 
+    context = _context()
     if not resume_text:
-        st.session_state.pop("resume", None)
+        context.resume = None
+        st.session_state.pop("resume_key", None)
         st.sidebar.caption("Add a resume to see match scores for each job.")
         return
 
     resume_key = hashlib.sha256(resume_text.encode("utf-8")).hexdigest()
     if st.session_state.get("resume_key") != resume_key:
         st.session_state["resume_key"] = resume_key
-        st.session_state["resume"] = parse_resume(resume_text)
-        st.session_state["match_cache"] = {}
-        st.session_state["generated_resumes"] = {}
+        context.resume = parse_resume(resume_text)
+        context.match_cache.clear()
+        context.generated.clear()
 
-    resume: ParsedResume = st.session_state["resume"]
+    resume = context.resume
     st.sidebar.success(f"Resume loaded{': ' + resume.name if resume.name else ''}.")
 
 
@@ -206,12 +184,14 @@ def render_job_detail(job: dict) -> None:
 
 
 def render_resume_match(job: dict) -> None:
-    resume: ParsedResume | None = st.session_state.get("resume")
+    context = _context()
+    resume = context.resume
     if resume is None:
         st.info("Upload or paste your resume in the sidebar to score it against this job.")
         return
 
-    result = _match_resume_to_job(resume, job)
+    with st.spinner("Scoring resume against this job..."):
+        result = score_job(resume, job, context)
     score_cols = st.columns(4)
     score_cols[0].metric("Overall match", f"{result.score}/100")
     score_cols[1].metric("Keyword match", f"{result.keyword_match_score}/100")
@@ -237,36 +217,108 @@ def render_resume_match(job: dict) -> None:
         except Exception as error:
             st.error(f"Could not generate resume: {error}")
             return
-        st.session_state.setdefault("generated_resumes", {})[job["id"]] = generated
+        context.generated[job["id"]] = generated
 
-    generated = st.session_state.get("generated_resumes", {}).get(job["id"])
+    generated = context.generated.get(job["id"])
     if generated is not None:
-        st.caption(generated.message)
-        download_cols = st.columns(2)
-        download_cols[0].download_button(
-            "Download .tex",
-            data=generated.tex_path.read_bytes(),
-            file_name=generated.tex_path.name,
-            mime="application/x-tex",
-            use_container_width=True,
-        )
-        download_cols[1].download_button(
-            "Download PDF",
-            data=generated.pdf_path.read_bytes(),
-            file_name=generated.pdf_path.name,
-            mime="application/pdf",
-            use_container_width=True,
-        )
+        _render_downloads(generated, key_prefix=f"job_{job['id']}")
 
 
-def _match_resume_to_job(resume: ParsedResume, job: dict) -> MatchResult:
-    cache: dict = st.session_state.setdefault("match_cache", {})
-    cache_key = (job["id"], job["scraped_at"])
-    if cache_key not in cache:
-        with st.spinner("Scoring resume against this job..."):
-            parsed_job = parse_job_description(job["raw_description"] or job["cleaned_description"] or "")
-            cache[cache_key] = score_resume_against_job(resume, parsed_job)
-    return cache[cache_key]
+def render_agent() -> None:
+    st.caption(
+        "Ask the agent to find jobs, fetch a new Greenhouse/Lever board, rank jobs against your resume, "
+        "or generate a resume for a job. It uses the same data as the Jobs tab."
+    )
+    if not agent_available():
+        st.info("Set the ANTHROPIC_API_KEY environment variable (see .env.example) and restart the app to use the agent.")
+        return
+
+    history: list = st.session_state.setdefault("agent_history", [])
+    transcript: list[dict] = st.session_state.setdefault("agent_transcript", [])
+    if transcript and st.button("Clear conversation"):
+        history.clear()
+        transcript.clear()
+
+    for entry in transcript:
+        with st.chat_message(entry["role"]):
+            for step in entry.get("steps", []):
+                st.caption(step)
+            st.markdown(entry["text"])
+
+    prompt = st.chat_input("e.g. Which saved jobs best match my resume?")
+    if not prompt:
+        _render_agent_downloads()
+        return
+
+    transcript.append({"role": "user", "text": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    steps: list[str] = []
+    with st.chat_message("assistant"):
+        with st.status("Working...", expanded=False) as status:
+
+            def on_event(event: AgentEvent) -> None:
+                label = {"tool_call": "Calling", "tool_result": "Finished", "tool_error": "Failed"}[event.kind]
+                if event.kind == "tool_call":
+                    steps.append(f"Tool: {event.tool_name}({event.detail})")
+                elif event.kind == "tool_error":
+                    steps.append(f"Tool {event.tool_name} failed: {event.detail}")
+                status.update(label=f"{label} {event.tool_name}...")
+
+            try:
+                reply = run_agent_turn(create_client(), history, prompt, _context(), on_event)
+                status.update(label="Done", state="complete")
+            except Exception as error:
+                reply = f"The agent hit an error: {error}"
+                status.update(label="Error", state="error")
+                # Drop the incomplete turn so the next request starts from a valid conversation.
+                _truncate_to_last_complete_turn(history)
+        for step in steps:
+            st.caption(step)
+        st.markdown(reply)
+    transcript.append({"role": "assistant", "text": reply, "steps": steps})
+    _render_agent_downloads()
+
+
+def _render_agent_downloads() -> None:
+    generated = _context().generated
+    if not generated:
+        return
+    st.divider()
+    st.markdown("**Generated resumes**")
+    for job_id, files in generated.items():
+        st.caption(f"Job {job_id}: {files.message}")
+        _render_downloads(files, key_prefix=f"agent_{job_id}")
+
+
+def _truncate_to_last_complete_turn(history: list) -> None:
+    while history and not (history[-1]["role"] == "assistant" and _is_final_reply(history[-1])):
+        history.pop()
+
+
+def _is_final_reply(message: dict) -> bool:
+    return not any(getattr(block, "type", None) == "tool_use" for block in message["content"])
+
+
+def _render_downloads(generated: GeneratedResume, key_prefix: str) -> None:
+    download_cols = st.columns(2)
+    download_cols[0].download_button(
+        "Download .tex",
+        data=generated.tex_path.read_bytes(),
+        file_name=generated.tex_path.name,
+        mime="application/x-tex",
+        use_container_width=True,
+        key=f"{key_prefix}_tex",
+    )
+    download_cols[1].download_button(
+        "Download PDF",
+        data=generated.pdf_path.read_bytes(),
+        file_name=generated.pdf_path.name,
+        mime="application/pdf",
+        use_container_width=True,
+        key=f"{key_prefix}_pdf",
+    )
 
 
 def _render_list(items: list[str]) -> None:
@@ -282,23 +334,6 @@ def _job_label(jobs: list[dict], job_id: int) -> str:
     if not job:
         return str(job_id)
     return f"{job['title']} - {job['company']}"
-
-
-def _looks_like_url(url: str) -> bool:
-    parsed = urlparse(url)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-
-
-def _resolve_source_type(source_url: str, source_type: str) -> str:
-    if source_type != "Auto-detect":
-        return source_type
-
-    host = urlparse(source_url).netloc.lower()
-    if "greenhouse.io" in host:
-        return "Greenhouse"
-    if "lever.co" in host:
-        return "Lever"
-    return "Direct URL"
 
 
 if __name__ == "__main__":

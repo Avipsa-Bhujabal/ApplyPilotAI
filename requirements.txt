@@ -7,3 +7,4 @@ python-dotenv>=1.0.1
 pypdf>=4.2.0
 sentence-transformers>=3.0.0
 beautifulsoup4>=4.12.3
+anthropic>=1.13.0

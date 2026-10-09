@@ -36,6 +36,39 @@ The app intentionally does not scrape LinkedIn, Indeed, Glassdoor, login-gated p
   - matched/missing keywords and improvement suggestions
   - generate a LaTeX resume and PDF (compiled with `pdflatex` if installed, otherwise a ReportLab fallback)
 
+## AI Agent
+
+The **AI Agent** tab is a chat with a Claude-powered agent that uses the app's own features as tools. It decides which steps to take and runs them in a loop until it can answer.
+
+Example requests:
+
+- "Fetch jobs from https://boards.greenhouse.io/stripe for Stripe."
+- "Which saved backend jobs best match my resume?"
+- "Why is my score low for job 12, and what should I change?"
+- "Generate a resume for the best match."
+
+Tools available to the agent (`app/agent/tools.py`):
+
+| Tool | What it does |
+|---|---|
+| `search_jobs` | Search saved jobs by keyword or company |
+| `get_job` | Read one job's description and detected skills |
+| `fetch_jobs` | Fetch a public Greenhouse/Lever board or job URL and save the jobs |
+| `refresh_configured_sources` | Re-fetch everything in `data/job_sources.json` |
+| `get_resume` | Read the resume loaded in the sidebar |
+| `score_resume` | Score the resume against one job |
+| `rank_jobs` | Score the resume against several jobs, best first |
+| `generate_resume` | Generate a LaTeX + PDF resume for a job (downloadable in the tab) |
+
+The agent loop lives in `app/agent/agent.py`. It needs an Anthropic API key:
+
+```powershell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+streamlit run streamlit_app.py
+```
+
+Set `ANTHROPIC_MODEL` to use a different Claude model (default `claude-opus-5-5`). The agent only fetches public pages and never submits applications.
+
 ## Setup
 
 ```powershell

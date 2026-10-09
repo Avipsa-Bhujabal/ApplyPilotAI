@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 
-from app.services.job_parser import ParsedJob
+from app.services.job_parser import ParsedJob, parse_job_description
 from app.services.resume_parser import ParsedResume
 
 
@@ -63,6 +63,14 @@ def score_resume_against_job(resume: ParsedResume, job: ParsedJob) -> MatchResul
         missing_keywords=missing,
         suggestions=suggestions,
         semantic_model_used=model_used,
+    )
+
+
+def score_resume_against_stored_job(resume: ParsedResume, job: dict) -> MatchResult:
+    """Score a resume against a job row from job_storage."""
+    return score_resume_against_job(
+        resume,
+        parse_job_description(job.get("raw_description") or job.get("cleaned_description") or ""),
     )
 
 
